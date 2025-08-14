@@ -1,2 +1,2 @@
-# analytics-db
-Contains schema and scripts for analytics data storage.
+# identity-and-access
+Service for managing user authentication, authorization, and access control.
