@@ -1,6 +1,7 @@
 from datetime import datetime
 
 import requests
+import re 
 
 SERVER = "NEED FROM INFRASTRUCTURE TEAM"
 REALM = "NEED FROM INFRASTRUCTURE"
@@ -50,3 +51,54 @@ def reset_pwd(username):
         return "password reset email sent"
     else:
         return "password reset email not sent"
+
+
+def update_password(username, new_password):
+    user = get_user(username)
+    if not user:
+        return False, "no user of that name"
+
+    user_id = user["id"]
+    url = f"{SERVER}/admin/realms/{REALM}/users/{user_id}/reset-password"
+    headers = {
+        "Authorization": f"Bearer {ADMIN_TOKEN}",
+        "Content-Type": "application/json"
+    }
+    payload = {
+        "type": "password",
+        "value": new_password,
+        "temporary": False
+    }
+    r = requests.put(url, headers=headers, json=payload)
+    if r.status_code == 204:
+        return True, "password updated successfully"
+    else:
+        return False, "password update failed"
+
+def change_password_flow(username, new_password, confirm_password):
+    if new_password != confirm_password:
+        return "passwords do not match"
+
+    valid, msg = validate_password(new_password)
+    if not valid:
+        return msg
+
+    success, msg = update_password(username, new_password)
+    return msg
+
+#detect first time password needs updating 
+def is_password_temporary(username):
+    user = get_user(username)
+    if not user:
+        return False
+    return "UPDATE_PASSWORD" in user.get("requiredActions", [])
+
+#we should use keycloak itself for password criteria validation but here is some code  
+def validate_password(password):
+    if len(password) <= 8:
+        return False, "password must be at least 8 characters long"
+    if not re.search(r"[A-Z]", password):
+        return False, "password must contain at least one uppercase letter"
+    if not re.search(r"[!@#$%^&*(),.?\":{}|<>]", password):
+        return False, "password must contain at least one special character"
+    return True, "password is valid"
