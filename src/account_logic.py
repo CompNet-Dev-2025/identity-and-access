@@ -49,4 +49,4 @@ def reset_pwd(username):
     if r.status_code == 200:
         return "password reset email sent"
     else:
-        return "password reset email not sent"
+        return "password reset email not sentww"
