@@ -5,7 +5,7 @@ from src.account_logic import forget_pwd, parse_username
 app = Flask(__name__)
 
 
-@app.route("/")
+@app.route("/login")
 def login():
     return render_template("login.html", title="Login")
 
@@ -15,7 +15,7 @@ def forgot():
     return render_template("forgot_password.html", title="Forgot Password")
 
 
-@app.route("/newstudent")
+@app.route("/new-student")
 def contact():
     return render_template("new_student.html", title="Contact")
 
