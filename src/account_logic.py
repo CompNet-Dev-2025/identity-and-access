@@ -77,14 +77,14 @@ def update_password(username, new_password):
 
 def change_password_flow(username, new_password, confirm_password):
     if new_password != confirm_password:
-        return "passwords do not match"
+        return False, "passwords do not match"
 
     valid, msg = validate_password(new_password)
     if not valid:
-        return msg
+        return False, msg
 
     success, msg = update_password(username, new_password)
-    return msg
+    return success, msg
 
 #detect first time password needs updating 
 def is_password_temporary(username):
@@ -95,7 +95,7 @@ def is_password_temporary(username):
 
 #we should use keycloak itself for password criteria validation but here is some code  
 def validate_password(password):
-    if len(password) <= 8:
+    if len(password) < 8:
         return False, "password must be at least 8 characters long"
     if not re.search(r"[A-Z]", password):
         return False, "password must contain at least one uppercase letter"
