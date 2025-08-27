@@ -1,30 +1,90 @@
 import os
+import time
 from datetime import datetime
 import requests
 
-SERVER = os.getenv("KEYCLOAK_BASE_URL", "")
-REALM = os.getenv("KEYCLOAK_REALM", "")
-ADMIN_TOKEN = os.getenv("KEYCLOAK_ADMIN_TOKEN", "")
+SERVER = os.getenv("KEYCLOAK_BASE_URL", "http://10.10.124.59:7080")
+REALM = os.getenv("KEYCLOAK_REALM", "master")
+ADMIN_TOKEN = os.getenv("KEYCLOAK_ADMIN_TOKEN")
 
 
-def _auth_headers():
-    if not (SERVER and REALM and ADMIN_TOKEN):
-        raise RuntimeError("Keycloak config missing (SERVER/REALM/TOKEN).")
-    return {"Authorization": f"Bearer {ADMIN_TOKEN}"}
+def keycloak_admin_token():
+    url = f"{SERVER}/realms/{REALM}/protocol/openid-connect/token"
+    body = {
+        "client_id": "admin-cli",
+        "username": "admin",
+        "password": "admin",
+        "grant_type": "password"
+    }
+    headers = {"Content-Type": "application/x-www-form-urlencoded"}
+
+    print(f"[TOKEN] POST {url}")
+    print(f"[TOKEN] body: client_id={body['client_id']}, username={body['username']}, "
+          f"password={'***'}, grant_type={body['grant_type']}")
+
+    response = requests.post(url, data=body, headers=headers, timeout=10)
+    print(f"[TOKEN] status={response.status_code}")
+    # print a short preview of response body
+    print(f"[TOKEN] resp: {response.text[:300]}")
+
+    response.raise_for_status()
+
+    data = response.json()
+    token = data["access_token"]
+    expires_in = int(data.get("expires_in", 300))
+
+    os.environ["KEYCLOAK_ADMIN_TOKEN"] = token
+    os.environ["KEYCLOAK_ADMIN_TOKEN_EXPIRES_AT"] = str(int(time.time()) + expires_in)
+
+    print(f"[TOKEN] saved env KEYCLOAK_ADMIN_TOKEN (len={len(token)})")
+    print(f"[TOKEN] expires_in={expires_in}s")
+    return token
+
+
+def get_admin_token_cached():
+    exp = int(os.getenv("KEYCLOAK_ADMIN_TOKEN_EXPIRES_AT", "0"))
+    now = int(time.time())
+    if exp - 30 > now:
+        tok = os.getenv("KEYCLOAK_ADMIN_TOKEN")
+        if tok:
+            print(f"[TOKEN] using cached token (seconds left={exp - now})")
+            return tok
+        else:
+            print("[TOKEN] exp set but token missing in env → refreshing")
+    else:
+        print("[TOKEN] no valid cached token → refreshing")
+    return keycloak_admin_token()
+
+
+def auth_headers():
+    token = os.getenv("KEYCLOAK_ADMIN_TOKEN")
+    if not token:
+        print("[AUTH] KEYCLOAK_ADMIN_TOKEN not set. Call keycloak_admin_token() first.")
+        raise RuntimeError("KEYCLOAK_ADMIN_TOKEN not set. Call keycloak_admin_token() first.")
+    return {"Authorization": f"Bearer {token}"}
 
 
 def get_user(username: str):
     try:
-        r = requests.get(
-            f"{SERVER}/admin/realms/{REALM}/users",
-            headers=_auth_headers(),
-            params={"username": username, "exact": "true"},
-            timeout=10,
-        )
+        url = f"{os.getenv('KEYCLOAK_BASE_URL', 'http://10.10.124.59:7080')}/admin/realms/{os.getenv('KEYCLOAK_REALM', 'master')}/users"
+        params = {"username": username, "exact": "true"}
+        headers = auth_headers()
+
+        print(f"[GET_USER] GET {url} params={params}")
+        r = requests.get(url, headers=headers, params=params, timeout=10)
+        print(f"[GET_USER] status={r.status_code}")
+        print(f"[GET_USER] resp: {r.text[:300]}")
         r.raise_for_status()
+
         users = r.json() or []
-        return users[0] if users else None
-    except requests.RequestException:
+        if users:
+            print(f"[GET_USER] found user id={users[0].get('id')}")
+            return users[0]
+        print("[GET_USER] user not found")
+        return None
+
+    except requests.RequestException as e:
+        print("[GET_USER] error:", e)
         return None
 
 
@@ -39,19 +99,67 @@ def parse_username(email: str):
     return f"{local}{yy}"
 
 
-def forget_pwd(username: str) -> bool:
+def create_user_from_email(email: str):
+    get_admin_token_cached()
+
+    username = parse_username(email)
+    if isinstance(username, str) and username.lower().startswith("error:"):
+        print(f"[CREATE_FROM_EMAIL] invalid email: {username}")
+        return None
+
+    existing = get_user(username)
+    if existing:
+        print(f"[CREATE_FROM_EMAIL] user already exists id={existing.get('id')}")
+        return existing
+
+    base = os.getenv('KEYCLOAK_BASE_URL', SERVER)
+    realm = os.getenv('KEYCLOAK_REALM', REALM)
+    url = f"{base}/admin/realms/{realm}/users"
+    headers = {**auth_headers(), "Content-Type": "application/json"}
+    payload = {"username": username, "email": email, "enabled": True}
+
+    print(f"[CREATE_FROM_EMAIL] POST {url}")
+    print(f"[CREATE_FROM_EMAIL] payload={payload}")
+    r = requests.post(url, headers=headers, json=payload, timeout=10)
+    print(f"[CREATE_FROM_EMAIL] status={r.status_code}")
+    print(f"[CREATE_FROM_EMAIL] resp: {r.text[:300]}")
+
+    if r.status_code in (201, 409):
+        u = get_user(username)
+        print(f"[CREATE_FROM_EMAIL] created/loaded user id={u.get('id') if u else None}")
+        return u
+
+    try:
+        r.raise_for_status()
+    except requests.RequestException as e:
+        print("[CREATE_FROM_EMAIL] error:", e)
+    return None
+
+
+def forget_pwd(username: str):
+    get_admin_token_cached()
     user = get_user(username)
     if not user:
+        print("[FORGOT] user not found; treating as success to avoid leakage")
         return True
     user_id = user.get("id")
+
     try:
-        r = requests.put(
-            f"{SERVER}/admin/realms/{REALM}/users/{user_id}/execute-actions-email",
-            headers={**_auth_headers(), "Content-Type": "application/json"},
-            params={"lifespan": 3600},
-            json=["UPDATE_PASSWORD"],
-            timeout=10,
-        )
-        return r.status_code in (200, 204)
-    except requests.RequestException:
+        url = f"{os.getenv('KEYCLOAK_BASE_URL', 'http://10.10.124.59:7080')}/admin/realms/{os.getenv('KEYCLOAK_REALM', 'master')}/users/{user_id}/execute-actions-email"
+        headers = {**auth_headers(), "Content-Type": "application/json"}
+        params = {"lifespan": 3600}
+        body = ["UPDATE_PASSWORD"]
+
+        print(f"[FORGOT] PUT {url} params={params} body={body}")
+        r = requests.put(url, headers=headers, params=params, json=body, timeout=10)
+        print(f"[FORGOT] status={r.status_code}")
+        print(f"[FORGOT] resp: {r.text[:300]}")
+        r.raise_for_status()
+
+        ok = r.status_code in (200, 204)
+        print(f"[FORGOT] success={ok}")
+        return ok
+
+    except requests.RequestException as e:
+        print("[FORGOT] error:", e)
         return False
